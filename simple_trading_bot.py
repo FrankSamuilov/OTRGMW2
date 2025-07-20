@@ -706,9 +706,9 @@ class SimpleTradingBot:
             print_colored(f"\n⚠️ 未发现合适的交易机会", Colors.WARNING)
             print_colored(f"   建议: 继续观察市场，等待更明确的信号", Colors.INFO)
 
-    async def _perform_technical_analysis(self, symbol: str) -> Dict[str, Any]:
+        async def _perform_technical_analysis(self, symbol: str) -> Dict[str, Any]:
         """
-        执行技术分析 - 修复评分逻辑
+        执行技术分析 - 修复评分逻辑和变量定义错误
         """
         try:
             # 获取K线数据
@@ -724,31 +724,70 @@ class SimpleTradingBot:
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else latest
 
-            technical_signals = {
+            # 初始化技术分析结果字典
+            technical_analysis = {
+                'symbol': symbol,
+                'current_price': latest['close'],
                 'trend': self._determine_trend(df),
                 'momentum': self._analyze_momentum(df),
                 'volume': self._analyze_volume(df),
                 'support_resistance': self._find_key_levels(df),
                 'patterns': self._detect_patterns(df),
                 'signal_strength': 0,
-                'current_price': latest['close']
+                'signal_details': [],
+                'df': df  # 保留DataFrame供其他分析使用
             }
+
+            # 提取各种指标值
+            technical_analysis['rsi'] = latest.get('RSI', 50)
+            technical_analysis['macd'] = latest.get('MACD', 0)
+            technical_analysis['macd_signal'] = latest.get('MACD_Signal', 0)
+            technical_analysis['macd_histogram'] = latest.get('MACD_Histogram', 0)
+            technical_analysis['williams_r'] = latest.get('Williams_%R', -50)
+            technical_analysis['cci'] = latest.get('CCI', 0)
+            technical_analysis['adx'] = latest.get('ADX', 20)
+            technical_analysis['ema20'] = latest.get('EMA20', latest['close'])
+            technical_analysis['ema50'] = latest.get('EMA50', latest['close'])
+            technical_analysis['momentum'] = latest.get('Momentum', 0)
+            technical_analysis['volume_ratio'] = latest.get('volume', 0) / df['volume'].rolling(20).mean().iloc[
+                -1] if 'volume' in df else 1
+
+            # 计算布林带位置
+            if all(col in df.columns for col in ['BB_Upper', 'BB_Lower', 'BB_Middle']):
+                bb_upper = latest['BB_Upper']
+                bb_lower = latest['BB_Lower']
+                bb_middle = latest['BB_Middle']
+                current_price = latest['close']
+
+                # 计算价格在布林带中的位置（0-100%，可以超过100%）
+                bb_range = bb_upper - bb_lower
+                if bb_range > 0:
+                    bb_position = ((current_price - bb_lower) / bb_range) * 100
+                else:
+                    bb_position = 50
+
+                technical_analysis['bb_position'] = bb_position
+                technical_analysis['bb_upper'] = bb_upper
+                technical_analysis['bb_lower'] = bb_lower
+                technical_analysis['bb_middle'] = bb_middle
+            else:
+                technical_analysis['bb_position'] = 50
 
             # 初始化详细的信号评分
             signal_details = []
             signal_count = 0.0
 
             # 1. 趋势信号 (权重: 2.0)
-            trend_dir = technical_signals['trend']['direction']
-            trend_strength = technical_signals['trend']['strength']
+            trend_dir = technical_analysis['trend']['direction']
+            trend_strength = technical_analysis['trend']['strength']
 
             if trend_dir == 'UP':
-                trend_score = trend_strength * 1.0  # 最多+2.0
+                trend_score = trend_strength * 2.0  # 最多+2.0
                 signal_count += trend_score
                 signal_details.append(f"上升趋势 (+{trend_score:.1f})")
                 print_colored(f"    • 上升趋势 (强度: {trend_strength:.1f}, 得分: +{trend_score:.1f})", Colors.GREEN)
             elif trend_dir == 'DOWN':
-                trend_score = -trend_strength * 1.0  # 最多-2.0
+                trend_score = -trend_strength * 2.0  # 最多-2.0
                 signal_count += trend_score
                 signal_details.append(f"下降趋势 ({trend_score:.1f})")
                 print_colored(f"    • 下降趋势 (强度: {trend_strength:.1f}, 得分: {trend_score:.1f})", Colors.RED)
@@ -757,9 +796,8 @@ class SimpleTradingBot:
                 print_colored(f"    • 横盘整理 (得分: 0.0)", Colors.YELLOW)
 
             # 2. RSI信号 (权重: 1.5)
-            if 'rsi' in technical_signals['momentum']:
-                rsi = technical_signals['momentum']['rsi']
-
+            rsi = technical_analysis['rsi']
+            if rsi and not pd.isna(rsi):
                 if rsi < 20:  # 极度超卖
                     rsi_score = 2.0
                     signal_details.append(f"RSI极度超卖 (+{rsi_score:.1f})")
@@ -786,92 +824,71 @@ class SimpleTradingBot:
                     print_colored(f"    • RSI偏高 ({rsi:.1f}, 得分: {rsi_score:.1f})", Colors.YELLOW)
                 else:  # 中性
                     rsi_score = 0.0
-                    signal_details.append(f"RSI中性 ({rsi_score:.1f})")
-                    print_colored(f"    • RSI中性 ({rsi:.1f}, 得分: {rsi_score:.1f})", Colors.INFO)
+                    signal_details.append(f"RSI中性 ({rsi:.1f}, 得分: 0.0)")
+                    print_colored(f"    • RSI中性 ({rsi:.1f}, 得分: 0.0)", Colors.INFO)
 
                 signal_count += rsi_score
 
             # 3. MACD信号 (权重: 1.0)
-            if 'macd_signal' in technical_signals['momentum']:
-                macd_sig = technical_signals['momentum']['macd_signal']
-
-                if macd_sig == 'BULLISH':
-                    macd_score = 1.0
-                    signal_count += macd_score
-                    signal_details.append(f"MACD金叉 (+{macd_score:.1f})")
-                    print_colored(f"    • MACD金叉 (得分: +{macd_score:.1f})", Colors.GREEN)
-                elif macd_sig == 'BEARISH':
-                    macd_score = -1.0
-                    signal_count += macd_score
-                    signal_details.append(f"MACD死叉 ({macd_score:.1f})")
-                    print_colored(f"    • MACD死叉 (得分: {macd_score:.1f})", Colors.RED)
-                else:
-                    signal_details.append("MACD中性 (0.0)")
-                    print_colored(f"    • MACD中性 (得分: 0.0)", Colors.INFO)
+            macd_signal = technical_analysis['momentum'].get('macd_signal', 'NEUTRAL')
+            if macd_signal == 'BULLISH':
+                macd_score = 1.0
+                signal_count += macd_score
+                signal_details.append(f"MACD金叉 (+{macd_score:.1f})")
+                print_colored(f"    • MACD金叉 (得分: +{macd_score:.1f})", Colors.GREEN)
+            elif macd_signal == 'BEARISH':
+                macd_score = -1.0
+                signal_count += macd_score
+                signal_details.append(f"MACD死叉 ({macd_score:.1f})")
+                print_colored(f"    • MACD死叉 (得分: {macd_score:.1f})", Colors.RED)
+            else:
+                signal_details.append("MACD中性 (0.0)")
+                print_colored(f"    • MACD中性 (得分: 0.0)", Colors.INFO)
 
             # 4. 成交量确认 (乘数效应)
-            if 'trend' in technical_signals['volume']:
-                vol_trend = technical_signals['volume']['trend']
-                vol_ratio = technical_signals['volume'].get('ratio', 1.0)
+            vol_trend = technical_analysis['volume'].get('trend', 'NEUTRAL')
+            vol_ratio = technical_analysis['volume'].get('ratio', 1.0)
 
-                if vol_trend == 'INCREASING':
-                    if vol_ratio > 2.0:  # 成交量激增
-                        vol_multiplier = 1.5
-                        signal_details.append(f"成交量激增 (x{vol_multiplier:.1f})")
-                        print_colored(f"    • 成交量激增 (比率: {vol_ratio:.1f}x, 乘数: {vol_multiplier:.1f})",
-                                      Colors.CYAN)
-                    else:
-                        vol_multiplier = 1.2
-                        signal_details.append(f"成交量放大 (x{vol_multiplier:.1f})")
-                        print_colored(f"    • 成交量放大 (乘数: {vol_multiplier:.1f})", Colors.INFO)
-
-                    # 只有在有明确方向时才应用乘数
-                    if signal_count != 0:
-                        signal_count *= vol_multiplier
+            if vol_trend == 'INCREASING':
+                if vol_ratio > 2.0:  # 成交量激增
+                    vol_multiplier = 1.5
+                    signal_details.append(f"成交量激增 (x{vol_multiplier:.1f})")
+                    print_colored(f"    • 成交量激增 (比率: {vol_ratio:.1f}x, 乘数: {vol_multiplier:.1f})",
+                                  Colors.CYAN)
                 else:
-                    signal_details.append("成交量萎缩")
-                    print_colored(f"    • 成交量萎缩", Colors.GRAY)
+                    vol_multiplier = 1.2
+                    signal_details.append(f"成交量放大 (x{vol_multiplier:.1f})")
+                    print_colored(f"    • 成交量放大 (乘数: {vol_multiplier:.1f})", Colors.INFO)
+
+                # 只有在有明确方向时才应用乘数
+                if signal_count != 0:
+                    signal_count *= vol_multiplier
+            else:
+                signal_details.append("成交量萎缩")
+                print_colored(f"    • 成交量萎缩", Colors.GRAY)
 
             # 5. 形态加分 (权重: 0.5-1.0)
-            if technical_signals['patterns']:
-                for pattern in technical_signals['patterns']:
-                    if "V型反转" in pattern:
-                        pattern_score = 1.0
-                        signal_count += pattern_score
-                        signal_details.append(f"{pattern} (+{pattern_score:.1f})")
-                    elif "突破近期高点" in pattern:
-                        pattern_score = 0.5
-                        signal_count += pattern_score
-                        signal_details.append(f"{pattern} (+{pattern_score:.1f})")
-                    elif "突破近期低点" in pattern:
-                        pattern_score = -0.5
-                        signal_count += pattern_score
-                        signal_details.append(f"{pattern} ({pattern_score:.1f})")
+            patterns = technical_analysis.get('patterns', [])
+            for pattern in patterns:
+                if "V型反转" in pattern:
+                    pattern_score = 1.0
+                    signal_count += pattern_score
+                    signal_details.append(f"{pattern} (+{pattern_score:.1f})")
+                elif "突破近期高点" in pattern:
+                    pattern_score = 0.5
+                    signal_count += pattern_score
+                    signal_details.append(f"{pattern} (+{pattern_score:.1f})")
+                elif "突破近期低点" in pattern:
+                    pattern_score = -0.5
+                    signal_count += pattern_score
+                    signal_details.append(f"{pattern} ({pattern_score:.1f})")
 
-                    print_colored(f"    • 形态: {pattern}", Colors.CYAN)
-
-            if all(col in df.columns for col in ['BB_Upper', 'BB_Lower', 'BB_Middle']):
-                bb_upper = latest['BB_Upper']
-                bb_lower = latest['BB_Lower']
-                current_price = latest['close']
-
-                # 计算价格在布林带中的位置（0-100%，可以超过100%）
-                bb_range = bb_upper - bb_lower
-                if bb_range > 0:
-                    bb_position = ((current_price - bb_lower) / bb_range) * 100
-                else:
-                    bb_position = 50
-
-                technical_analysis['bb_position'] = bb_position
-                technical_analysis['bb_upper'] = bb_upper
-                technical_analysis['bb_lower'] = bb_lower
-            else:
-                technical_analysis['bb_position'] = 50
+                print_colored(f"    • 形态: {pattern}", Colors.CYAN)
 
             # 6. 支撑阻力位分析
-            sr = technical_signals['support_resistance']
+            sr = technical_analysis.get('support_resistance', {})
             if sr.get('supports') or sr.get('resistances'):
-                price = technical_signals['current_price']
+                price = technical_analysis['current_price']
 
                 # 检查是否接近支撑位
                 if sr.get('supports'):
@@ -898,18 +915,19 @@ class SimpleTradingBot:
                                           Colors.RED)
 
             # 保存详细的信号信息
-            technical_signals['signal_strength'] = signal_count
-            technical_signals['signal_details'] = signal_details
+            technical_analysis['signal_strength'] = signal_count
+            technical_analysis['signal_details'] = signal_details
 
             # 打印最终技术评分
             score_color = Colors.GREEN if signal_count > 1 else Colors.RED if signal_count < -1 else Colors.YELLOW
             print_colored(f"    📊 技术分析总分: {score_color}{signal_count:.1f}{Colors.RESET}", Colors.BOLD)
 
-            return technical_signals
+            return technical_analysis
 
         except Exception as e:
-            self.logger.error(f"技术分析失败: {e}")
-            print_colored(f"    ❌ 技术分析错误: {str(e)}", Colors.ERROR)
+            self.logger.error(f"技术分析失败 {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
             return {'error': str(e)}
 
     def _integrate_analyses_v2(self, game_theory: Dict, technical: Dict, symbol: str) -> Dict[str, Any]:
